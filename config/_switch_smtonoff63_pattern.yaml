@@ -1,0 +1,167 @@
+# шаблон SonOff Pow R316 V1.0
+# в качестве двух настенных розеток с контролем тока и напряжения
+
+packages:
+  device_base: !include __device_base.yaml
+
+esphome:
+  on_boot:
+    then:
+      - lambda: |-  
+         id(alert_id).publish_state(false);
+         // восстановить из флеша состояние нумбера
+         id(current_set).state=id(cur_off); 
+         auto call = id(current_set).make_call();   
+         call.set_value(id(cur_off));   
+         call.perform(); 
+         id(current_set).state=id(cur_off);
+         
+esp8266:
+  board: esp01_1m
+  restore_from_flash: true
+
+uart:
+  rx_pin: GPIO3
+  baud_rate: 4800
+
+globals:
+  - id: cur_off
+    type: float
+    restore_value: yes
+    initial_value: '60.0'
+
+dallas:
+#нога 1-wire 
+  - pin: GPIO16
+    update_interval: 30s
+
+binary_sensor:
+# кнопка на GPIO0 (на корпусе устройства)
+  - platform: gpio
+    pin:
+      number: GPIO0
+      mode: INPUT_PULLUP
+      inverted: True
+    id: button
+    internal: true
+    on_click:
+    - min_length: 10ms
+      max_length: 1000ms
+# переключить реле при коротком нажатии   
+      then:
+        - switch.toggle: relay_sw
+# restart esp , нужно зажать кнопку на 5000 секунд (ПОСЧИТАТЬ ДО 8)
+    - min_length: 4000ms
+      max_length: 6000ms
+      then:
+        - switch.toggle: restart_sw
+# индикатор срабатывания защиты и отключения реле
+  - platform: template
+    device_class: safety
+    icon: mdi:chart-timeline-variant 
+    name: $upper_devicename Overload  
+    id: alert_id
+    on_state:
+      - lambda: |-
+         if(x){ // показать аварию   
+            auto call = id(led).turn_on(); 
+            call.set_effect("Blink_allarm");
+            call.perform();
+         } else { // показать режим работы
+            auto call = id(led).make_call();
+            call.set_state(id(relay).state);
+            call.perform();
+         }
+    
+light:
+# для управления и индикации статуса загрузки
+  - platform: status_led
+    id: led
+    internal: true
+    pin: 
+      number: GPIO13
+      inverted: false
+    effects:
+      - strobe:
+      - strobe:
+          # индикация ошибки
+          name: Blink_allarm
+          colors:
+            - state: true
+              duration: 100ms
+            - state: false
+              duration: 100ms
+    
+switch:
+# реле
+  - platform: gpio
+    id: relay
+    pin: GPIO12
+    restore_mode: RESTORE_DEFAULT_ON
+#переключатель кнопка, совмещает реле, диод аппаратный
+  - platform: template
+    restore_state: true
+    name: $upper_devicename Relay
+    optimistic: true
+    id: relay_sw
+    turn_on_action:
+      - switch.turn_on: relay
+      # при включении сбрасываем индикатор аварии
+      - lambda: |- 
+         id(alert_id).publish_state(false);
+    turn_off_action: 
+      - switch.turn_off: relay
+
+number:
+# регулятор тока отсечки
+  - platform: template
+    name: $upper_devicename Current OFF
+    id: current_set
+    optimistic: true
+    min_value: 0.1
+    max_value: 63
+    step: 0.1
+    on_value: 
+      - lambda: |-
+          id(cur_off)=x;
+          id(alert_id).publish_state(false);
+
+sensor:
+#датчик тока и напряжения
+  - platform: cse7766 
+    update_interval: 5s
+    voltage:
+      name: ${upper_devicename} Voltage
+      filters:
+        - calibrate_linear:
+          - ${zerro_calibrate} -> 0.0
+          - 220.0 -> 220.0
+    current:
+      name: ${upper_devicename} Current
+      on_value:
+        - lambda: |-
+           if(x>=id(cur_off)){ //пеегрузка 
+              id(relay_sw).turn_off(); // отключить реле
+              id(alert_id).publish_state(true);
+              ESP_LOGE("This","Alarm ! Current %f , overload. All Turn Off", x);
+           }
+    power:
+      name: ${upper_devicename} Power
+    energy:
+      name: ${upper_devicename} Energy
+# датчик DALLAS для контроля нагрева
+  - platform: dallas
+    internal: ${no_termosensor}
+    index: 0
+    id: temperature
+    name: $upper_devicename Temperature
+    filters:  
+      -  offset: ${temperature_offset}    
+# при излишнем нагреве - отключить реле, поднять флаг защиты
+    on_value_range:
+      - above: 55.0
+        then:
+        - switch.turn_off: relay_sw
+        - lambda: |- 
+             id(alert_id).publish_state(true);
+             ESP_LOGE("","Alarm Temperature %f", x);
