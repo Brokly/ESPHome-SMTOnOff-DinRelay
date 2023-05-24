@@ -1,1 +1,11 @@
+substitutions:
+  devicename: smtsonoff-63-1
+  upper_devicename: SMTONOFF 63 Free Pos1
+  location: Не установлен.
+  hardware: SMTONOFF 63A (Din rail oдиночное реле с измерением параметров, max 64 Amp) + DS18B20.
+  wifi_ip: !secret ip_smtonoff-63-1
+  zerro_calibrate: "3.4"
+  no_termosensor: 'false' # признак отсутствия термодатчика, то есть ДАТЧИК ЕСТЬ !
+  temperature_offset: "-2.0" # калибровка термодатчика
 
+<<: !include _switch_smtonoff63_pattern.yaml
